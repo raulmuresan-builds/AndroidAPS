@@ -3,7 +3,7 @@
 #
 # Ruleaza zilnic noaptea. Construieste DOAR cand apare o versiune oficiala noua:
 #   - AAPS (fullRelease) + AAPSClient (aapsclientRelease) -> Google Drive: AAPS/<versiune>/
-#   - xDrip+ (doar versiuni stabile, APK oficial)        -> Google Drive: xDrip/<versiune>/
+#   - xDrip+ (doar versiuni stabile, APK oficial)        -> Google Drive: AAPS/xDrip/<versiune>/
 # Pastreaza ultimele 3 versiuni din fiecare; cele mai vechi sunt mutate in Cosul
 # de gunoi din Google Drive (recuperabile 30 de zile).
 #
@@ -136,7 +136,7 @@ jobs:
           ROOT=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='AAPS' and mimeType='application/vnd.google-apps.folder' and trashed=false" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
           [ -n "$ROOT" ] && [ "$ROOT" != "null" ] || exit 0
           curl -s -G -H "Authorization: Bearer $AT" \
-            --data-urlencode "q='$ROOT' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false" \
+            --data-urlencode "q='$ROOT' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false and name != 'xDrip'" \
             --data-urlencode "fields=files(id,name,createdTime)" --data-urlencode "orderBy=createdTime desc" \
             https://www.googleapis.com/drive/v3/files > folders.json
           jq -r '.files[] | .name' folders.json | sed 's/^/Gasit: /'
@@ -152,6 +152,28 @@ jobs:
     env:
       LAST: ${{ vars.XDRIP_LAST_BUILT }}
     steps:
+      - name: Muta folderul xDrip in AAPS (daca exista inca in radacina Drive)
+        run: |
+          DECODED=$(echo "$GDRIVE_OAUTH2" | base64 -d)
+          CID=$(echo "$DECODED" | cut -d'|' -f1); RT=$(echo "$DECODED" | cut -d'|' -f2)
+          echo "::add-mask::$CID"; echo "::add-mask::$RT"
+          AT=$(curl -s -X POST https://oauth2.googleapis.com/token -d client_id="$CID" -d refresh_token="$RT" -d grant_type=refresh_token | jq -r .access_token)
+          echo "::add-mask::$AT"
+          [ -n "$AT" ] && [ "$AT" != "null" ] || { echo "::error::Nu s-a putut obtine accesul la Google Drive."; exit 1; }
+          FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
+          AAPS_ID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='AAPS' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
+          if [ -z "$AAPS_ID" ] || [ "$AAPS_ID" = "null" ]; then echo "Folderul AAPS nu exista inca."; exit 0; fi
+          OLD=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='xDrip' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
+          if [ -z "$OLD" ] || [ "$OLD" = "null" ]; then echo "Nimic de mutat."; exit 0; fi
+          INSIDE=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='xDrip' and '$AAPS_ID' in parents and $FOLDER" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
+          if [ -n "$INSIDE" ] && [ "$INSIDE" != "null" ]; then
+            echo "::warning::Exista deja AAPS/xDrip; folderul vechi xDrip din radacina nu a fost mutat."
+            exit 0
+          fi
+          CODE=$(curl -s -o resp.json -w "%{http_code}" -X PATCH -H "Authorization: Bearer $AT" "https://www.googleapis.com/drive/v3/files/$OLD?addParents=$AAPS_ID&removeParents=root")
+          if [ "$CODE" != "200" ]; then echo "::error::Mutare esuata ($CODE)"; cat resp.json; exit 1; fi
+          echo "Folderul xDrip a fost mutat in AAPS/xDrip."
+
       - name: Verifica ultima versiune stabila xDrip+
         id: check
         run: |
@@ -160,7 +182,7 @@ jobs:
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           if [ "$LATEST" = "$LAST" ]; then echo "new=false" >> "$GITHUB_OUTPUT"; echo "Nimic nou."; else echo "new=true" >> "$GITHUB_OUTPUT"; fi
 
-      - name: Descarca APK-ul oficial si urca-l in Google Drive (xDrip/<versiune>)
+      - name: Descarca APK-ul oficial si urca-l in Google Drive (AAPS/xDrip/<versiune>)
         if: steps.check.outputs.new == 'true'
         env:
           LATEST: ${{ steps.check.outputs.latest }}
@@ -187,21 +209,22 @@ jobs:
             fi
             echo "$ID"
           }
-          ROOT=$(find_or_create "xDrip" "")
+          AAPS_ID=$(find_or_create "AAPS" "")
+          ROOT=$(find_or_create "xDrip" "$AAPS_ID")
           VER=$(find_or_create "$LATEST" "$ROOT")
           CODE=$(curl -s -w "%{http_code}" -o resp.json -X POST -H "Authorization: Bearer $AT" \
             -F "metadata={\"name\":\"$NAME\",\"parents\":[\"$VER\"]};type=application/json;charset=UTF-8" \
             -F "file=@$NAME;type=application/vnd.android.package-archive" \
             "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
           if [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; then echo "::error::Upload esuat ($CODE)"; cat resp.json; exit 1; fi
-          echo "Urcat in Google Drive: xDrip/$LATEST/$NAME"
+          echo "Urcat in Google Drive: AAPS/xDrip/$LATEST/$NAME"
           curl -s -G -H "Authorization: Bearer $AT" \
             --data-urlencode "q='$ROOT' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false" \
             --data-urlencode "fields=files(id,name,createdTime)" --data-urlencode "orderBy=createdTime desc" \
             https://www.googleapis.com/drive/v3/files > folders.json
           jq -r --argjson k "$KEEP" '.files[$k:][] | "\(.id) \(.name)"' folders.json | while read -r ID FNAME; do
             curl -s -X PATCH -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"trashed":true}' "https://www.googleapis.com/drive/v3/files/$ID" > /dev/null
-            echo "Mutat in Cosul de gunoi: xDrip/$FNAME"
+            echo "Mutat in Cosul de gunoi: AAPS/xDrip/$FNAME"
           done
 
       - name: Memoreaza versiunea salvata
