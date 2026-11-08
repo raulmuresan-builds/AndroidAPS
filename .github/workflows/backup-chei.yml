@@ -1,0 +1,99 @@
+# -----------------------------------------------------------------------------
+# Backup chei - raulmuresan-builds
+#
+# Copiaza in Google Drive, in folderul privat "AAPS Chei (privat)" (doar proprietarul
+# are acces), tot ce e nevoie ca build-urile sa poata fi refacute:
+#   - keystore.jks + keyStoreInfo.txt (parole, alias) - cheia de semnare a APK-urilor
+#   - cheie_activare.txt - cheia secreta pentru codurile de activare
+#   - CITESTE.txt - ce este fiecare fisier si unde se mai afla
+# Se ruleaza manual. Fisierele vechi cu acelasi nume sunt mutate in Cos.
+# -----------------------------------------------------------------------------
+
+name: Backup chei (privat)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pregateste fisierele
+        env:
+          S_KEYSTORE_SET: ${{ secrets.KEYSTORE_SET }}
+          S_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          S_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          S_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          S_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          S_ACT: ${{ secrets.AAPS_ACTIVATION_SECRET }}
+        run: |
+          set +x
+          mkdir -p "$RUNNER_TEMP/b"; cd "$RUNNER_TEMP/b"
+          if [ -n "$S_KEYSTORE_SET" ]; then
+            D=$(printf '%s' "$S_KEYSTORE_SET" | base64 -d)
+            KB=$(printf '%s' "$D" | cut -d'|' -f1); KP=$(printf '%s' "$D" | cut -d'|' -f2)
+            KA=$(printf '%s' "$D" | cut -d'|' -f3); KK=$(printf '%s' "$D" | cut -d'|' -f4)
+          else
+            KB="$S_KEYSTORE_BASE64"; KP="$S_KEYSTORE_PASSWORD"; KA="$S_KEY_ALIAS"; KK="$S_KEY_PASSWORD"
+          fi
+          for V in "$KP" "$KA" "$KK" "$S_ACT"; do [ -n "$V" ] && echo "::add-mask::$V"; done
+          [ -n "$KB" ] && [ -n "$KP" ] && [ -n "$KA" ] && [ -n "$KK" ] || { echo "::error::Lipseste keystore-ul sau parolele lui."; exit 1; }
+          [ -n "$S_ACT" ] || { echo "::error::Lipseste AAPS_ACTIVATION_SECRET."; exit 1; }
+          printf '%s' "$KB" | base64 -d > keystore.jks
+          keytool -list -keystore keystore.jks -storepass "$KP" -alias "$KA" > /dev/null || { echo "::error::Keystore-ul nu se deschide cu parola salvata."; exit 1; }
+          printf 'KEYSTORE_PASSWORD=%s\nKEY_PASSWORD=%s\nALIAS=%s\n' "$KP" "$KK" "$KA" > keyStoreInfo.txt
+          if [ -n "$S_KEYSTORE_SET" ]; then printf '%s\n' "$S_KEYSTORE_SET" > keystore_set.txt; fi
+          printf '%s\n' "$S_ACT" > cheie_activare.txt
+          cat > CITESTE.txt <<'EOF'
+          AAPS Chei (privat) - NU partaja acest folder cu nimeni.
+
+          keystore.jks + keyStoreInfo.txt
+            Cheia de semnare a tuturor APK-urilor AAPS / AAPSClient.
+            Daca se pierde: update-urile nu se mai instaleaza peste versiunea veche,
+            toti oamenii trebuie sa reinstaleze si sa primeasca coduri noi.
+            In GitHub: secretul KEYSTORE_SET (raulmuresan-builds/AndroidAPS).
+          keystore_set.txt
+            Aceeasi cheie, in formatul secretului KEYSTORE_SET (gata de lipit in GitHub).
+          cheie_activare.txt
+            Cheia secreta pentru codurile de activare (cod = primele 8 caractere,
+            majuscule, din SHA-256 aplicat pe "cheie:ID").
+            In GitHub: secretul AAPS_ACTIVATION_SECRET. Copie pe Mac:
+            Documents/AAPS_Activare/cheie_secreta_NU_DISTRIBUI.txt
+          Alte secrete GitHub (se pot regenera, nu au copie aici):
+            GDRIVE_OAUTH2 (acces Google Drive pentru build), GH_PAT (organizatie).
+          EOF
+          sed -i 's/^          //' CITESTE.txt
+          ls -l
+
+      - name: Urca in Google Drive (AAPS Chei (privat))
+        env:
+          S_GDRIVE_OAUTH2: ${{ secrets.GDRIVE_OAUTH2 }}
+        run: |
+          set +x
+          cd "$RUNNER_TEMP/b"
+          G=$(printf '%s' "$S_GDRIVE_OAUTH2" | base64 -d)
+          CID=$(printf '%s' "$G" | cut -d'|' -f1); RT=$(printf '%s' "$G" | cut -d'|' -f2)
+          echo "::add-mask::$CID"; echo "::add-mask::$RT"
+          AT=$(curl -s -X POST https://oauth2.googleapis.com/token -d client_id="$CID" -d refresh_token="$RT" -d grant_type=refresh_token | jq -r .access_token)
+          echo "::add-mask::$AT"
+          [ -n "$AT" ] && [ "$AT" != "null" ] || { echo "::error::Fara acces la Google Drive."; exit 1; }
+          API=https://www.googleapis.com/drive/v3/files
+          FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
+          DIR=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='AAPS Chei (privat)' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
+          if [ -z "$DIR" ] || [ "$DIR" = "null" ]; then
+            DIR=$(curl -s -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"name":"AAPS Chei (privat)","mimeType":"application/vnd.google-apps.folder","parents":["root"]}' $API | jq -r .id)
+          fi
+          for F in *; do
+            OLD=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='$F' and '$DIR' in parents and trashed=false" --data-urlencode "fields=files(id)" $API | jq -r '.files[].id')
+            for O in $OLD; do curl -s -X PATCH -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"trashed":true}' "$API/$O" > /dev/null; done
+            CODE=$(curl -s -o resp.json -w "%{http_code}" -X POST -H "Authorization: Bearer $AT" \
+              -F "metadata={\"name\":\"$F\",\"parents\":[\"$DIR\"]};type=application/json;charset=UTF-8" \
+              -F "file=@$F;type=application/octet-stream" \
+              "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+            if [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; then echo "::error::Upload esuat pentru $F ($CODE)"; exit 1; fi
+            echo "Urcat: AAPS Chei (privat)/$F"
+          done
+          rm -f "$RUNNER_TEMP"/b/*
