@@ -22,6 +22,11 @@ on:
   schedule:
     - cron: "17 1 * * *"   # 03:17 ora Romaniei iarna (04:17 vara)
   workflow_dispatch:
+    inputs:
+      xdrip_fortat:
+        description: 'Urca din nou ultimul xDrip+ chiar daca a mai fost salvat'
+        type: boolean
+        default: false
 
 concurrency:
   group: auto-build
@@ -130,7 +135,7 @@ jobs:
           LATEST=$(gh api repos/NightscoutFoundation/xDrip/releases/latest --jq .tag_name)
           echo "Ultima versiune stabila xDrip+: $LATEST | ultima salvata: ${LAST:-niciuna}"
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
-          if [ "$LATEST" = "$LAST" ]; then echo "new=false" >> "$GITHUB_OUTPUT"; echo "Nimic nou."; else echo "new=true" >> "$GITHUB_OUTPUT"; fi
+          if [ "$LATEST" = "$LAST" ] && [ "${{ inputs.xdrip_fortat }}" != "true" ]; then echo "new=false" >> "$GITHUB_OUTPUT"; echo "Nimic nou."; else echo "new=true" >> "$GITHUB_OUTPUT"; fi
 
       - name: Descarca APK-ul oficial si urca-l in Google Drive (AAPS Clienti/xDrip/<versiune>)
         if: steps.check.outputs.new == 'true'
