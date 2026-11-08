@@ -112,7 +112,12 @@ jobs:
       - name: Aplica protectia
         env:
           ACTIVATION_SECRET: ${{ secrets.AAPS_ACTIVATION_SECRET }}
-        run: python3 "$RUNNER_TEMP/protectie/aplica_protectie.py" "$RUNNER_TEMP/protectie"
+        run: |
+          python3 "$RUNNER_TEMP/protectie/aplica_protectie.py" "$RUNNER_TEMP/protectie"
+          # AAPS refuza build-ul cu modificari necomise: le comitem local (doar pe runner, nu se urca nicaieri).
+          git add -A app/src/main
+          git -c user.name="raulmuresan-builds" -c user.email="builds@localhost" commit -q -m "Activare raulmuresan-builds (local, la build)"
+          git status --short | head -5
 
       - name: Versiunea
         run: |
