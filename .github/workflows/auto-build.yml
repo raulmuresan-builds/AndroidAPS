@@ -1,13 +1,16 @@
 # -----------------------------------------------------------------------------
-# Auto Build (AAPS + AAPSClient + xDrip+) - raulmuresan-builds
+# Auto Build (AAPS Master protejat + AAPSClient + xDrip+) - raulmuresan-builds
 #
-# Ruleaza zilnic noaptea. Construieste DOAR cand apare o versiune oficiala noua:
-#   - AAPS (fullRelease)              -> Google Drive: AAPS/<versiune>/
-#   - AAPSClient (aapsclientRelease)  -> Google Drive: AAPS/AAPSClient/<versiune>/
-#   - xDrip+ (doar versiuni stabile, APK oficial)        -> Google Drive: AAPS/xDrip/<versiune>/
+# Ruleaza zilnic noaptea. Construieste DOAR cand apare o versiune oficiala noua.
+# Totul ajunge in Google Drive, in folderul partajat cu clientii:
+#   - AAPS Master protejat (activare legata de telefon) -> AAPS Clienti/Master/<versiune>/
+#   - AAPSClient (standard)                             -> AAPS Clienti/Client/<versiune>/
+#   - xDrip+ (doar versiuni stabile, APK oficial)       -> AAPS Clienti/xDrip/<versiune>/
+# Nu se mai construieste niciun AAPS neprotejat.
 # Pastreaza ultimele 3 versiuni din fiecare; cele mai vechi sunt mutate in Cosul
 # de gunoi din Google Drive (recuperabile 30 de zile).
 #
+# Build-urile AAPS se fac prin aaps-protejat.yml (variant=master / variant=client).
 # Fisier separat de workflow-urile oficiale AAPS, ca "Sync fork" sa nu dea conflicte.
 # Foloseste secretele: GH_PAT (organizatie), GDRIVE_OAUTH2 (repo).
 # Variabile scrise automat: AAPS_LAST_BUILT, XDRIP_LAST_BUILT.
@@ -32,10 +35,11 @@ env:
   REPO: ${{ github.repository }}
   GDRIVE_OAUTH2: ${{ secrets.GDRIVE_OAUTH2 }}
   KEEP: "3"
+  DEST: "AAPS Clienti"
 
 jobs:
   aaps:
-    name: AAPS + AAPSClient
+    name: AAPS Master protejat + AAPSClient
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
@@ -61,59 +65,20 @@ jobs:
         if: steps.check.outputs.new == 'true'
         run: gh api -X POST "repos/$REPO/merge-upstream" -f branch=master
 
-      - name: Verifica ca versiunea poate fi aleasa in AAPS CI
+      - name: Construieste Master protejat si AAPSClient (asteapta finalizarea)
         if: steps.check.outputs.new == 'true'
         env:
           LATEST: ${{ steps.check.outputs.latest }}
         run: |
           sleep 10
-          gh api "repos/$REPO/contents/.github/workflows/aaps-ci.yml?ref=master" --jq .content | base64 -d > aaps-ci.yml
-          ESC=$(printf '%s' "$LATEST" | sed 's/\./\\./g')
-          if ! grep -qE "^[[:space:]]*-[[:space:]]*['\"]?${ESC}['\"]?[[:space:]]*$" aaps-ci.yml; then
-            echo "::error::Versiunea $LATEST nu apare inca in lista din aaps-ci.yml. Se reincearca noaptea urmatoare."
-            exit 1
-          fi
-          echo "Versiunea $LATEST este disponibila in AAPS CI."
-
-      - name: Pregateste folderul in Google Drive (AAPS/<versiune>)
-        if: steps.check.outputs.new == 'true'
-        env:
-          LATEST: ${{ steps.check.outputs.latest }}
-        run: |
-          DECODED=$(echo "$GDRIVE_OAUTH2" | base64 -d)
-          CID=$(echo "$DECODED" | cut -d'|' -f1); RT=$(echo "$DECODED" | cut -d'|' -f2)
-          echo "::add-mask::$CID"; echo "::add-mask::$RT"
-          AT=$(curl -s -X POST https://oauth2.googleapis.com/token -d client_id="$CID" -d refresh_token="$RT" -d grant_type=refresh_token | jq -r .access_token)
-          echo "::add-mask::$AT"
-          [ -n "$AT" ] && [ "$AT" != "null" ] || { echo "::error::Nu s-a putut obtine accesul la Google Drive."; exit 1; }
-          find_or_create() { # $1=nume $2=parinte (gol = radacina)
-            local Q="name='$1' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-            [ -n "$2" ] && Q="$Q and '$2' in parents"
-            local ID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=$Q" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
-            if [ -z "$ID" ] || [ "$ID" = "null" ]; then
-              local BODY="{\"name\":\"$1\",\"mimeType\":\"application/vnd.google-apps.folder\""
-              [ -n "$2" ] && BODY="$BODY,\"parents\":[\"$2\"]"
-              ID=$(curl -s -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d "$BODY}" https://www.googleapis.com/drive/v3/files | jq -r .id)
-            fi
-            echo "$ID"
-          }
-          ROOT=$(find_or_create "AAPS" "")
-          VER=$(find_or_create "$LATEST" "$ROOT")
-          echo "Folder Drive: AAPS ($ROOT) / $LATEST ($VER)"
-
-      - name: Construieste AAPS si AAPSClient (asteapta finalizarea)
-        if: steps.check.outputs.new == 'true'
-        env:
-          LATEST: ${{ steps.check.outputs.latest }}
-        run: |
           START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          for V in fullRelease aapsclientRelease; do
-            gh workflow run aaps-ci.yml -R "$REPO" --ref master -f tagName="$LATEST" -f buildVariant="$V"
+          for V in master client; do
+            gh workflow run aaps-protejat.yml -R "$REPO" --ref master -f tagName="$LATEST" -f variant="$V"
             echo "Pornit: $LATEST $V"
             sleep 10
           done
           sleep 30
-          IDS=$(gh run list -R "$REPO" --workflow aaps-ci.yml --event workflow_dispatch --limit 10 --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$START\") | .databaseId] | .[]")
+          IDS=$(gh run list -R "$REPO" --workflow aaps-protejat.yml --event workflow_dispatch --limit 10 --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$START\") | .databaseId] | .[]")
           COUNT=$(printf '%s\n' "$IDS" | grep -c . || true)
           if [ "$COUNT" -lt 2 ]; then echo "::error::Nu au pornit ambele build-uri (gasite: $COUNT)."; exit 1; fi
           for ID in $IDS; do
@@ -126,46 +91,7 @@ jobs:
         if: steps.check.outputs.new == 'true'
         run: gh variable set AAPS_LAST_BUILT -R "$REPO" --body "${{ steps.check.outputs.latest }}"
 
-      - name: Muta AAPSClient in AAPS/AAPSClient/<versiune>
-        run: |
-          DECODED=$(echo "$GDRIVE_OAUTH2" | base64 -d)
-          CID=$(echo "$DECODED" | cut -d'|' -f1); RT=$(echo "$DECODED" | cut -d'|' -f2)
-          echo "::add-mask::$CID"; echo "::add-mask::$RT"
-          AT=$(curl -s -X POST https://oauth2.googleapis.com/token -d client_id="$CID" -d refresh_token="$RT" -d grant_type=refresh_token | jq -r .access_token)
-          echo "::add-mask::$AT"
-          [ -n "$AT" ] && [ "$AT" != "null" ] || { echo "::error::Nu s-a putut obtine accesul la Google Drive."; exit 1; }
-          API=https://www.googleapis.com/drive/v3/files
-          FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
-          ROOT=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='AAPS' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
-          if [ -z "$ROOT" ] || [ "$ROOT" = "null" ]; then echo "Folderul AAPS nu exista inca."; exit 0; fi
-          find_or_create() { # $1=nume $2=parinte
-            local ID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='$1' and '$2' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
-            if [ -z "$ID" ] || [ "$ID" = "null" ]; then
-              ID=$(curl -s -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d "{\"name\":\"$1\",\"mimeType\":\"application/vnd.google-apps.folder\",\"parents\":[\"$2\"]}" $API | jq -r .id)
-            fi
-            echo "$ID"
-          }
-          curl -s -G -H "Authorization: Bearer $AT" \
-            --data-urlencode "q='$ROOT' in parents and $FOLDER and name != 'xDrip' and name != 'AAPSClient'" \
-            --data-urlencode "fields=files(id,name)" $API | jq -r '.files[] | "\(.id) \(.name)"' > versions.txt
-          MOVED=0
-          while read -r VID VNAME; do
-            curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q='$VID' in parents and trashed=false" \
-              --data-urlencode "fields=files(id,name)" $API \
-              | jq -r '.files[] | select(.name | test("aapsclient")) | "\(.id) \(.name)"' > client.txt
-            [ -s client.txt ] || continue
-            CL=$(find_or_create "AAPSClient" "$ROOT")
-            DEST=$(find_or_create "$VNAME" "$CL")
-            while read -r FID FNAME; do
-              CODE=$(curl -s -o resp.json -w "%{http_code}" -X PATCH -H "Authorization: Bearer $AT" "$API/$FID?addParents=$DEST&removeParents=$VID")
-              if [ "$CODE" != "200" ]; then echo "::error::Mutare esuata $FNAME ($CODE)"; cat resp.json; exit 1; fi
-              echo "Mutat: AAPS/$VNAME/$FNAME -> AAPS/AAPSClient/$VNAME/"
-              MOVED=$((MOVED+1))
-            done < client.txt
-          done < versions.txt
-          echo "Fisiere AAPSClient mutate: $MOVED"
-
-      - name: Pastreaza doar ultimele 3 versiuni AAPS si AAPSClient in Google Drive
+      - name: Pastreaza doar ultimele 3 versiuni Master si Client
         if: steps.check.outputs.new == 'true'
         run: |
           DECODED=$(echo "$GDRIVE_OAUTH2" | base64 -d)
@@ -175,22 +101,21 @@ jobs:
           echo "::add-mask::$AT"
           API=https://www.googleapis.com/drive/v3/files
           FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
-          ROOT=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='AAPS' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
+          ROOT=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='$DEST' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
           [ -n "$ROOT" ] && [ "$ROOT" != "null" ] || exit 0
-          prune() { # $1=id parinte $2=eticheta $3=filtru suplimentar
+          for SUB in Master Client; do
+            PID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='$SUB' and '$ROOT' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
+            [ -n "$PID" ] && [ "$PID" != "null" ] || continue
             curl -s -G -H "Authorization: Bearer $AT" \
-              --data-urlencode "q='$1' in parents and $FOLDER$3" \
+              --data-urlencode "q='$PID' in parents and $FOLDER" \
               --data-urlencode "fields=files(id,name,createdTime)" --data-urlencode "orderBy=createdTime desc" \
               $API > folders.json
-            jq -r '.files[] | .name' folders.json | sed "s|^|Gasit: $2/|"
+            jq -r '.files[] | .name' folders.json | sed "s|^|Gasit: $DEST/$SUB/|"
             jq -r --argjson k "$KEEP" '.files[$k:][] | "\(.id) \(.name)"' folders.json | while read -r ID NAME; do
               curl -s -X PATCH -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"trashed":true}' "$API/$ID" > /dev/null
-              echo "Mutat in Cosul de gunoi: $2/$NAME"
+              echo "Mutat in Cosul de gunoi: $DEST/$SUB/$NAME"
             done
-          }
-          prune "$ROOT" "AAPS" " and name != 'xDrip' and name != 'AAPSClient'"
-          CL=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='AAPSClient' and '$ROOT' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
-          if [ -n "$CL" ] && [ "$CL" != "null" ]; then prune "$CL" "AAPS/AAPSClient" ""; fi
+          done
 
   xdrip:
     name: xDrip+ (doar versiuni stabile)
@@ -199,28 +124,6 @@ jobs:
     env:
       LAST: ${{ vars.XDRIP_LAST_BUILT }}
     steps:
-      - name: Muta folderul xDrip in AAPS (daca exista inca in radacina Drive)
-        run: |
-          DECODED=$(echo "$GDRIVE_OAUTH2" | base64 -d)
-          CID=$(echo "$DECODED" | cut -d'|' -f1); RT=$(echo "$DECODED" | cut -d'|' -f2)
-          echo "::add-mask::$CID"; echo "::add-mask::$RT"
-          AT=$(curl -s -X POST https://oauth2.googleapis.com/token -d client_id="$CID" -d refresh_token="$RT" -d grant_type=refresh_token | jq -r .access_token)
-          echo "::add-mask::$AT"
-          [ -n "$AT" ] && [ "$AT" != "null" ] || { echo "::error::Nu s-a putut obtine accesul la Google Drive."; exit 1; }
-          FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
-          AAPS_ID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='AAPS' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
-          if [ -z "$AAPS_ID" ] || [ "$AAPS_ID" = "null" ]; then echo "Folderul AAPS nu exista inca."; exit 0; fi
-          OLD=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='xDrip' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
-          if [ -z "$OLD" ] || [ "$OLD" = "null" ]; then echo "Nimic de mutat."; exit 0; fi
-          INSIDE=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='xDrip' and '$AAPS_ID' in parents and $FOLDER" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
-          if [ -n "$INSIDE" ] && [ "$INSIDE" != "null" ]; then
-            echo "::warning::Exista deja AAPS/xDrip; folderul vechi xDrip din radacina nu a fost mutat."
-            exit 0
-          fi
-          CODE=$(curl -s -o resp.json -w "%{http_code}" -X PATCH -H "Authorization: Bearer $AT" "https://www.googleapis.com/drive/v3/files/$OLD?addParents=$AAPS_ID&removeParents=root")
-          if [ "$CODE" != "200" ]; then echo "::error::Mutare esuata ($CODE)"; cat resp.json; exit 1; fi
-          echo "Folderul xDrip a fost mutat in AAPS/xDrip."
-
       - name: Verifica ultima versiune stabila xDrip+
         id: check
         run: |
@@ -229,7 +132,7 @@ jobs:
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           if [ "$LATEST" = "$LAST" ]; then echo "new=false" >> "$GITHUB_OUTPUT"; echo "Nimic nou."; else echo "new=true" >> "$GITHUB_OUTPUT"; fi
 
-      - name: Descarca APK-ul oficial si urca-l in Google Drive (AAPS/xDrip/<versiune>)
+      - name: Descarca APK-ul oficial si urca-l in Google Drive (AAPS Clienti/xDrip/<versiune>)
         if: steps.check.outputs.new == 'true'
         env:
           LATEST: ${{ steps.check.outputs.latest }}
@@ -245,33 +148,31 @@ jobs:
           AT=$(curl -s -X POST https://oauth2.googleapis.com/token -d client_id="$CID" -d refresh_token="$RT" -d grant_type=refresh_token | jq -r .access_token)
           echo "::add-mask::$AT"
           [ -n "$AT" ] && [ "$AT" != "null" ] || { echo "::error::Nu s-a putut obtine accesul la Google Drive."; exit 1; }
-          find_or_create() {
-            local Q="name='$1' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-            [ -n "$2" ] && Q="$Q and '$2' in parents"
-            local ID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=$Q" --data-urlencode "fields=files(id)" https://www.googleapis.com/drive/v3/files | jq -r '.files[0].id')
+          API=https://www.googleapis.com/drive/v3/files
+          FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
+          find_or_create() { # $1=nume $2=parinte
+            local ID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='$1' and '$2' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
             if [ -z "$ID" ] || [ "$ID" = "null" ]; then
-              local BODY="{\"name\":\"$1\",\"mimeType\":\"application/vnd.google-apps.folder\""
-              [ -n "$2" ] && BODY="$BODY,\"parents\":[\"$2\"]"
-              ID=$(curl -s -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d "$BODY}" https://www.googleapis.com/drive/v3/files | jq -r .id)
+              ID=$(curl -s -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d "{\"name\":\"$1\",\"mimeType\":\"application/vnd.google-apps.folder\",\"parents\":[\"$2\"]}" $API | jq -r .id)
             fi
             echo "$ID"
           }
-          AAPS_ID=$(find_or_create "AAPS" "")
-          ROOT=$(find_or_create "xDrip" "$AAPS_ID")
-          VER=$(find_or_create "$LATEST" "$ROOT")
+          ROOT=$(find_or_create "$DEST" "root")
+          XD=$(find_or_create "xDrip" "$ROOT")
+          VER=$(find_or_create "$LATEST" "$XD")
           CODE=$(curl -s -w "%{http_code}" -o resp.json -X POST -H "Authorization: Bearer $AT" \
             -F "metadata={\"name\":\"$NAME\",\"parents\":[\"$VER\"]};type=application/json;charset=UTF-8" \
             -F "file=@$NAME;type=application/vnd.android.package-archive" \
             "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
           if [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; then echo "::error::Upload esuat ($CODE)"; cat resp.json; exit 1; fi
-          echo "Urcat in Google Drive: AAPS/xDrip/$LATEST/$NAME"
+          echo "Urcat in Google Drive: $DEST/xDrip/$LATEST/$NAME"
           curl -s -G -H "Authorization: Bearer $AT" \
-            --data-urlencode "q='$ROOT' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false" \
+            --data-urlencode "q='$XD' in parents and $FOLDER" \
             --data-urlencode "fields=files(id,name,createdTime)" --data-urlencode "orderBy=createdTime desc" \
-            https://www.googleapis.com/drive/v3/files > folders.json
+            $API > folders.json
           jq -r --argjson k "$KEEP" '.files[$k:][] | "\(.id) \(.name)"' folders.json | while read -r ID FNAME; do
-            curl -s -X PATCH -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"trashed":true}' "https://www.googleapis.com/drive/v3/files/$ID" > /dev/null
-            echo "Mutat in Cosul de gunoi: AAPS/xDrip/$FNAME"
+            curl -s -X PATCH -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"trashed":true}' "$API/$ID" > /dev/null
+            echo "Mutat in Cosul de gunoi: $DEST/xDrip/$FNAME"
           done
 
       - name: Memoreaza versiunea salvata

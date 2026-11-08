@@ -1,9 +1,11 @@
 # -----------------------------------------------------------------------------
-# AAPS Master protejat (activare legata de telefon) - raulmuresan-builds
+# AAPS pentru clienti - raulmuresan-builds
 #
-# Ia tag-ul oficial AAPS, aplica folderul protectie/, construieste DOAR fullRelease,
-# semneaza cu keystore-ul existent si urca APK-ul in Google Drive:
-#   AAPS Clienti/Master/<versiune>/aaps-<versiune>-protejat.apk
+# Ia tag-ul oficial AAPS, semneaza cu keystore-ul existent si urca in Google Drive:
+#   variant=master: aplica protectie/ (activare legata de telefon), fullRelease
+#                   -> AAPS Clienti/Master/<versiune>/aaps-<versiune>-protejat.apk
+#   variant=client: AAPSClient standard (aapsclientRelease), fara protectie
+#                   -> AAPS Clienti/Client/<versiune>/aapsclient-<versiune>.apk
 # Fisier separat de workflow-urile oficiale AAPS, ca "Sync fork" sa nu dea conflicte.
 # Secrete: KEYSTORE_SET (sau cele 4 separate), GDRIVE_OAUTH2, AAPS_ACTIVATION_SECRET.
 # -----------------------------------------------------------------------------
@@ -18,17 +20,26 @@ on:
         required: true
         default: '4.0.0'
         type: string
+      variant:
+        description: 'Ce se construieste'
+        required: true
+        default: 'master'
+        type: choice
+        options:
+          - master
+          - client
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build AAPS Master protejat
+    name: Build ${{ inputs.variant }} ${{ inputs.tagName }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       TAG: ${{ inputs.tagName }}
+      VARIANT: ${{ inputs.variant }}
     steps:
       - name: Decodeaza secretele
         env:
@@ -109,7 +120,8 @@ jobs:
       - name: Treci pe tag-ul oficial
         run: git checkout "refs/tags/$TAG"
 
-      - name: Aplica protectia
+      - name: Aplica protectia (doar Master)
+        if: inputs.variant == 'master'
         env:
           ACTIVATION_SECRET: ${{ secrets.AAPS_ACTIVATION_SECRET }}
         run: |
@@ -133,10 +145,16 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Construieste fullRelease
+      - name: Construieste APK-ul
         run: |
+          if [ "$VARIANT" = "master" ]; then
+            TASK=":app:assembleFullRelease"; OUT="app/build/outputs/apk/full/release"; NAME="aaps-${VERSION}-protejat.apk"
+          else
+            TASK=":app:assembleAapsclientRelease"; OUT="app/build/outputs/apk/aapsclient/release"; NAME="aapsclient-${VERSION}.apk"
+          fi
+          echo "APK_NAME=$NAME" >> "$GITHUB_ENV"
           chmod +x gradlew
-          ./gradlew :app:assembleFullRelease \
+          ./gradlew $TASK \
             -Dorg.gradle.jvmargs="-Xmx8g -XX:+UseParallelGC -Xss4m" \
             -Dkotlin.daemon.jvm.options="-Xmx2g" \
             -Dkotlin.compiler.execution.strategy="in-process" \
@@ -146,10 +164,10 @@ jobs:
             -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
             -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
-          mv app/build/outputs/apk/full/release/*.apk "aaps-${VERSION}-protejat.apk"
-          ls -l "aaps-${VERSION}-protejat.apk"
+          mv $OUT/*.apk "$NAME"
+          ls -l "$NAME"
 
-      - name: Urca in Google Drive (AAPS Clienti/Master/<versiune>)
+      - name: Urca in Google Drive (AAPS Clienti/<Master|Client>/<versiune>)
         run: |
           API=https://www.googleapis.com/drive/v3/files
           FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
@@ -163,9 +181,10 @@ jobs:
             echo "$ID"
           }
           ROOT=$(find_or_create "AAPS Clienti" "root")
-          MASTER=$(find_or_create "Master" "$ROOT")
-          VER=$(find_or_create "$VERSION" "$MASTER")
-          NAME="aaps-${VERSION}-protejat.apk"
+          if [ "$VARIANT" = "master" ]; then SUB="Master"; else SUB="Client"; fi
+          PARENT=$(find_or_create "$SUB" "$ROOT")
+          VER=$(find_or_create "$VERSION" "$PARENT")
+          NAME="$APK_NAME"
           OLD=$(curl -s -G -H "Authorization: Bearer $ACCESS_TOKEN" \
             --data-urlencode "q=name='$NAME' and '$VER' in parents and trashed=false" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
           if [ -n "$OLD" ] && [ "$OLD" != "null" ]; then
@@ -177,4 +196,4 @@ jobs:
             -F "file=@$NAME;type=application/vnd.android.package-archive" \
             "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
           if [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; then echo "::error::Upload esuat ($CODE)"; cat resp.json; exit 1; fi
-          echo "Urcat: AAPS Clienti/Master/$VERSION/$NAME"
+          echo "Urcat: AAPS Clienti/$SUB/$VERSION/$NAME"
