@@ -1,0 +1,175 @@
+# -----------------------------------------------------------------------------
+# AAPS Master protejat (activare legata de telefon) - raulmuresan-builds
+#
+# Ia tag-ul oficial AAPS, aplica folderul protectie/, construieste DOAR fullRelease,
+# semneaza cu keystore-ul existent si urca APK-ul in Google Drive:
+#   AAPS Clienti/Master/<versiune>/aaps-<versiune>-protejat.apk
+# Fisier separat de workflow-urile oficiale AAPS, ca "Sync fork" sa nu dea conflicte.
+# Secrete: KEYSTORE_SET (sau cele 4 separate), GDRIVE_OAUTH2, AAPS_ACTIVATION_SECRET.
+# -----------------------------------------------------------------------------
+
+name: AAPS Master protejat
+
+on:
+  workflow_dispatch:
+    inputs:
+      tagName:
+        description: 'Versiunea AAPS oficiala (tag), ex. 4.0.0'
+        required: true
+        default: '4.0.0'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build AAPS Master protejat
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TAG: ${{ inputs.tagName }}
+    steps:
+      - name: Decodeaza secretele
+        env:
+          S_KEYSTORE_SET: ${{ secrets.KEYSTORE_SET }}
+          S_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          S_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          S_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          S_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          S_GDRIVE_OAUTH2: ${{ secrets.GDRIVE_OAUTH2 }}
+        run: |
+          DELIM="AAPS_EOF_$(openssl rand -hex 16)"
+          emit() { printf '%s<<%s\n%s\n%s\n' "$1" "$DELIM" "$2" "$DELIM" >> "$GITHUB_ENV"; }
+          emit_masked() { echo "::add-mask::$2"; emit "$1" "$2"; }
+          if [ -n "$S_KEYSTORE_SET" ]; then
+            DECODED=$(printf '%s' "$S_KEYSTORE_SET" | base64 -d)
+            emit_masked KEYSTORE_BASE64   "$(printf '%s' "$DECODED" | cut -d'|' -f1)"
+            emit_masked KEYSTORE_PASSWORD "$(printf '%s' "$DECODED" | cut -d'|' -f2)"
+            emit_masked KEY_ALIAS         "$(printf '%s' "$DECODED" | cut -d'|' -f3)"
+            emit_masked KEY_PASSWORD      "$(printf '%s' "$DECODED" | cut -d'|' -f4)"
+          else
+            emit KEYSTORE_BASE64   "$S_KEYSTORE_BASE64"
+            emit KEYSTORE_PASSWORD "$S_KEYSTORE_PASSWORD"
+            emit KEY_ALIAS         "$S_KEY_ALIAS"
+            emit KEY_PASSWORD      "$S_KEY_PASSWORD"
+          fi
+          G=$(printf '%s' "$S_GDRIVE_OAUTH2" | base64 -d)
+          emit_masked GDRIVE_CLIENT_ID     "$(printf '%s' "$G" | cut -d'|' -f1)"
+          emit_masked GDRIVE_REFRESH_TOKEN "$(printf '%s' "$G" | cut -d'|' -f2)"
+
+      - name: Verifica secretele
+        env:
+          ACTIVATION_SECRET: ${{ secrets.AAPS_ACTIVATION_SECRET }}
+        run: |
+          M=0
+          for V in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD GDRIVE_CLIENT_ID GDRIVE_REFRESH_TOKEN ACTIVATION_SECRET; do
+            if [ -z "${!V}" ]; then echo "::error::Lipseste: $V"; M=1; fi
+          done
+          [ "$M" -eq 0 ] || exit 1
+          echo "Toate secretele sunt prezente."
+
+      - name: Decodeaza keystore-ul
+        run: |
+          mkdir -p "$RUNNER_TEMP/keystore"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/keystore.jks"
+
+      - name: Acces Google Drive
+        run: |
+          AT=$(curl -s -X POST https://oauth2.googleapis.com/token \
+            -d client_id="$GDRIVE_CLIENT_ID" -d refresh_token="$GDRIVE_REFRESH_TOKEN" -d grant_type=refresh_token | jq -r .access_token)
+          echo "::add-mask::$AT"
+          [ -n "$AT" ] && [ "$AT" != "null" ] || { echo "::error::Nu s-a putut obtine accesul la Google Drive."; exit 1; }
+          echo "ACCESS_TOKEN=$AT" >> "$GITHUB_ENV"
+
+      - name: Checkout fork
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Pastreaza protectia si harta JDK inainte de tag
+        run: |
+          cp -r protectie "$RUNNER_TEMP/protectie"
+          cp .github/jdk-map.json "$RUNNER_TEMP/jdk-map.json"
+
+      - name: Descarca tag-ul oficial
+        run: |
+          git remote add upstream https://github.com/nightscout/AndroidAPS.git || true
+          git fetch upstream "refs/tags/$TAG:refs/tags/$TAG"
+
+      - name: Alege JDK dupa tag
+        run: |
+          JAVA_VERSION=$(jq -r '.default' "$RUNNER_TEMP/jdk-map.json")
+          while IFS=$'\t' read -r pattern jdk; do
+            if [[ "$TAG" == $pattern ]]; then JAVA_VERSION="$jdk"; break; fi
+          done < <(jq -r '.mappings[] | "\(.pattern)\t\(.jdk)"' "$RUNNER_TEMP/jdk-map.json")
+          echo "JAVA_VERSION=$JAVA_VERSION" >> "$GITHUB_ENV"
+          echo "Tag $TAG -> JDK $JAVA_VERSION"
+
+      - name: Treci pe tag-ul oficial
+        run: git checkout "refs/tags/$TAG"
+
+      - name: Aplica protectia
+        env:
+          ACTIVATION_SECRET: ${{ secrets.AAPS_ACTIVATION_SECRET }}
+        run: python3 "$RUNNER_TEMP/protectie/aplica_protectie.py" "$RUNNER_TEMP/protectie"
+
+      - name: Versiunea
+        run: |
+          VERSION=$(grep 'val appVersion' buildSrc/src/main/kotlin/Versions.kt | awk -F '"' '{print $2}')
+          [ -n "$VERSION" ] || VERSION="$TAG"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Versiune: $VERSION"
+
+      - name: JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Construieste fullRelease
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleFullRelease \
+            -Dorg.gradle.jvmargs="-Xmx8g -XX:+UseParallelGC -Xss4m" \
+            -Dkotlin.daemon.jvm.options="-Xmx2g" \
+            -Dkotlin.compiler.execution.strategy="in-process" \
+            -Dorg.gradle.workers.max=8 \
+            -Dorg.gradle.caching=true \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/keystore/keystore.jks" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+          mv app/build/outputs/apk/full/release/*.apk "aaps-${VERSION}-protejat.apk"
+          ls -l "aaps-${VERSION}-protejat.apk"
+
+      - name: Urca in Google Drive (AAPS Clienti/Master/<versiune>)
+        run: |
+          API=https://www.googleapis.com/drive/v3/files
+          FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
+          find_or_create() { # $1=nume $2=parinte
+            local ID=$(curl -s -G -H "Authorization: Bearer $ACCESS_TOKEN" \
+              --data-urlencode "q=name='$1' and '$2' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
+            if [ -z "$ID" ] || [ "$ID" = "null" ]; then
+              ID=$(curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+                -d "{\"name\":\"$1\",\"mimeType\":\"application/vnd.google-apps.folder\",\"parents\":[\"$2\"]}" $API | jq -r .id)
+            fi
+            echo "$ID"
+          }
+          ROOT=$(find_or_create "AAPS Clienti" "root")
+          MASTER=$(find_or_create "Master" "$ROOT")
+          VER=$(find_or_create "$VERSION" "$MASTER")
+          NAME="aaps-${VERSION}-protejat.apk"
+          OLD=$(curl -s -G -H "Authorization: Bearer $ACCESS_TOKEN" \
+            --data-urlencode "q=name='$NAME' and '$VER' in parents and trashed=false" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
+          if [ -n "$OLD" ] && [ "$OLD" != "null" ]; then
+            curl -s -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" -d '{"trashed":true}' "$API/$OLD" > /dev/null
+            echo "Fisierul vechi cu acelasi nume a fost mutat in Cos."
+          fi
+          CODE=$(curl -s -o resp.json -w "%{http_code}" -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -F "metadata={\"name\":\"$NAME\",\"parents\":[\"$VER\"]};type=application/json;charset=UTF-8" \
+            -F "file=@$NAME;type=application/vnd.android.package-archive" \
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+          if [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; then echo "::error::Upload esuat ($CODE)"; cat resp.json; exit 1; fi
+          echo "Urcat: AAPS Clienti/Master/$VERSION/$NAME"
