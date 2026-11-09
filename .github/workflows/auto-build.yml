@@ -5,6 +5,7 @@
 # Totul ajunge in Google Drive, in folderul partajat cu clientii:
 #   - AAPS Master protejat (activare legata de telefon) -> AAPS Clienti/Master/<versiune>/
 #   - AAPSClient (standard)                             -> AAPS Clienti/Client/<versiune>/
+#   - AAPS Rapid (obiective indeplinite, nepartajat)    -> AAPS Rapid/<versiune>/
 #   - xDrip+ (doar versiuni stabile, APK oficial)       -> AAPS Clienti/xDrip/<versiune>/
 # Nu se mai construieste niciun AAPS neprotejat.
 # Pastreaza ultimele 3 versiuni din fiecare; cele mai vechi sunt mutate in Cosul
@@ -70,14 +71,14 @@ jobs:
         if: steps.check.outputs.new == 'true'
         run: gh api -X POST "repos/$REPO/merge-upstream" -f branch=master
 
-      - name: Construieste Master protejat si AAPSClient (asteapta finalizarea)
+      - name: Construieste Master protejat, AAPSClient si Rapid (asteapta finalizarea)
         if: steps.check.outputs.new == 'true'
         env:
           LATEST: ${{ steps.check.outputs.latest }}
         run: |
           sleep 10
           START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          for V in master client; do
+          for V in master client rapid; do
             gh workflow run aaps-protejat.yml -R "$REPO" --ref master -f tagName="$LATEST" -f variant="$V"
             echo "Pornit: $LATEST $V"
             sleep 10
@@ -85,7 +86,7 @@ jobs:
           sleep 30
           IDS=$(gh run list -R "$REPO" --workflow aaps-protejat.yml --event workflow_dispatch --limit 10 --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$START\") | .databaseId] | .[]")
           COUNT=$(printf '%s\n' "$IDS" | grep -c . || true)
-          if [ "$COUNT" -lt 2 ]; then echo "::error::Nu au pornit ambele build-uri (gasite: $COUNT)."; exit 1; fi
+          if [ "$COUNT" -lt 3 ]; then echo "::error::Nu au pornit toate cele 3 build-uri (gasite: $COUNT)."; exit 1; fi
           for ID in $IDS; do
             echo "Astept build-ul $ID ..."
             gh run watch "$ID" -R "$REPO" --exit-status --interval 60 > /dev/null
@@ -96,7 +97,7 @@ jobs:
         if: steps.check.outputs.new == 'true'
         run: gh variable set AAPS_LAST_BUILT -R "$REPO" --body "${{ steps.check.outputs.latest }}"
 
-      - name: Pastreaza doar ultimele 3 versiuni Master si Client
+      - name: Pastreaza doar ultimele 3 versiuni Master, Client si Rapid
         if: steps.check.outputs.new == 'true'
         run: |
           DECODED=$(echo "$GDRIVE_OAUTH2" | base64 -d)
@@ -107,9 +108,13 @@ jobs:
           API=https://www.googleapis.com/drive/v3/files
           FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
           ROOT=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='$DEST' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
-          [ -n "$ROOT" ] && [ "$ROOT" != "null" ] || exit 0
-          for SUB in Master Client; do
-            PID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='$SUB' and '$ROOT' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
+          for SUB in Master Client Rapid; do
+            if [ "$SUB" = "Rapid" ]; then
+              PID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='AAPS Rapid' and 'root' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
+            else
+              [ -n "$ROOT" ] && [ "$ROOT" != "null" ] || continue
+              PID=$(curl -s -G -H "Authorization: Bearer $AT" --data-urlencode "q=name='$SUB' and '$ROOT' in parents and $FOLDER" --data-urlencode "fields=files(id)" $API | jq -r '.files[0].id')
+            fi
             [ -n "$PID" ] && [ "$PID" != "null" ] || continue
             curl -s -G -H "Authorization: Bearer $AT" \
               --data-urlencode "q='$PID' in parents and $FOLDER" \

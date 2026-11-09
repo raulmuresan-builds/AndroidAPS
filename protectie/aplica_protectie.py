@@ -2,7 +2,8 @@
 """
 Applies the phone-bound activation on top of the official AAPS source, at build time.
 Run from the AAPS source root (official tag already checked out):
-    ACTIVATION_SECRET=... python3 aplica_protectie.py <protectie folder>
+    ACTIVATION_SECRET=... python3 aplica_protectie.py <protectie folder> [--rapid]
+--rapid also marks the objectives as done on first start (AAPS Rapid).
 Stops with an error if a hook point is not found exactly once
 (AAPS changed its code) - it never produces an unprotected or broken APK silently.
 """
@@ -62,3 +63,28 @@ patch(
     "\n        }",
 )
 print("Protectie aplicata.")
+
+# ---------------------------------------------------------------------------
+# AAPS Rapid (doar cu --rapid): la prima pornire marcheaza obiectivele 0-9 ca
+# incepute si indeplinite, cu o data de acum 24 de ore (o data din viitor ar fi
+# stearsa de AAPS). Se intampla doar daca obiectivul 0 nu a fost inceput, deci
+# nu schimba nimic pe un telefon care are deja obiective. Starea se salveaza in
+# setari, asa ca AAPS Standard instalat peste Rapid o pastreaza.
+# ---------------------------------------------------------------------------
+if "--rapid" in sys.argv[2:]:
+    patch(
+        "plugins/constraints/src/commonMain/kotlin/app/aaps/plugins/constraints/objectives/ObjectivesPlugin.kt",
+        "), PluginConstraints, Objectives {",
+        "\n"
+        "\n    init {"
+        "\n        // AAPS Rapid raulmuresan-builds: obiectivele marcate indeplinite la prima pornire."
+        "\n        if (objectives.isNotEmpty() && !objectives[FIRST_OBJECTIVE].isStarted) {"
+        "\n            val past = kotlin.time.Clock.System.now().toEpochMilliseconds() - 24L * 60L * 60L * 1000L"
+        "\n            for (objective in objectives) {"
+        "\n                objective.startedOn = past"
+        "\n                objective.accomplishedOn = past"
+        "\n            }"
+        "\n        }"
+        "\n    }",
+    )
+    print("Varianta Rapid aplicata (obiective indeplinite la prima pornire).")
