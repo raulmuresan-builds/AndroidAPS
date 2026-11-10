@@ -3,7 +3,7 @@
 Applies the phone-bound activation on top of the official AAPS source, at build time.
 Run from the AAPS source root (official tag already checked out):
     ACTIVATION_SECRET=... python3 aplica_protectie.py <protectie folder> [--rapid]
---rapid also marks the objectives as done on first start (AAPS Rapid).
+--rapid also marks the objectives as done on first start (AAPS Setup).
 Stops with an error if a hook point is not found exactly once
 (AAPS changed its code) - it never produces an unprotected or broken APK silently.
 """
@@ -65,7 +65,7 @@ patch(
 print("Protectie aplicata.")
 
 # ---------------------------------------------------------------------------
-# AAPS Rapid (doar cu --rapid): la fiecare pornire, toate obiectivele care nu
+# AAPS Setup (doar cu --rapid): la fiecare pornire, toate obiectivele care nu
 # sunt indeplinite sunt marcate incepute si indeplinite, cu o data de acum 24 de
 # ore (o data din viitor ar fi stearsa de AAPS). Raspunsurile de la examen
 # (obiectivul 3) se marcheaza si ele: fara ele, Objective2 sterge la urmatoarea
@@ -78,7 +78,7 @@ if "--rapid" in sys.argv[2:]:
         "), PluginConstraints, Objectives {",
         "\n"
         "\n    init {"
-        "\n        // AAPS Rapid raulmuresan-builds: toate obiectivele indeplinite, inclusiv raspunsurile de la examen."
+        "\n        // AAPS Setup raulmuresan-builds: toate obiectivele indeplinite, inclusiv raspunsurile de la examen."
         "\n        val past = kotlin.time.Clock.System.now().toEpochMilliseconds() - 24L * 60L * 60L * 1000L"
         "\n        for (objective in objectives) {"
         "\n            for (task in objective.tasks) if (task is Objective.ExamTask && !task.answered) task.answered = true"

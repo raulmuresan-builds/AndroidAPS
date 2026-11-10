@@ -1,13 +1,13 @@
 # -----------------------------------------------------------------------------
-# AAPS pentru clienti - raulmuresan-builds
+# AAPS protejat - raulmuresan-builds
 #
 # Ia tag-ul oficial AAPS, semneaza cu keystore-ul existent si urca in Google Drive:
 #   variant=master: aplica protectie/ (activare legata de telefon), fullRelease
-#                   -> AAPS Clienti/Master/<versiune>/aaps-<versiune>-protejat.apk
+#                   -> AAPS Aplicații/Master/<versiune>/aaps-<versiune>-protejat.apk
 #   variant=client: AAPSClient standard (aapsclientRelease), fara protectie
-#                   -> AAPS Clienti/Client/<versiune>/aapsclient-<versiune>.apk
-#   variant=rapid:  ca master + obiectivele 0-9 indeplinite la prima pornire
-#                   -> AAPS Rapid/<versiune>/aaps-<versiune>-rapid.apk (folder nepartajat)
+#                   -> AAPS Aplicații/Client/<versiune>/aapsclient-<versiune>.apk
+#   variant=setup:  ca master + obiectivele 0-9 indeplinite la prima pornire
+#                   -> AAPS Setup/<versiune>/aaps-<versiune>-setup.apk (folder nepartajat)
 # Fisier separat de workflow-urile oficiale AAPS, ca "Sync fork" sa nu dea conflicte.
 # Secrete: KEYSTORE_SET (sau cele 4 separate), GDRIVE_OAUTH2, AAPS_ACTIVATION_SECRET.
 # -----------------------------------------------------------------------------
@@ -30,7 +30,7 @@ on:
         options:
           - master
           - client
-          - rapid
+          - setup
 
 permissions:
   contents: read
@@ -123,12 +123,12 @@ jobs:
       - name: Treci pe tag-ul oficial
         run: git checkout "refs/tags/$TAG"
 
-      - name: Aplica protectia (Master si Rapid)
-        if: inputs.variant == 'master' || inputs.variant == 'rapid'
+      - name: Aplica protectia (Master si Setup)
+        if: inputs.variant == 'master' || inputs.variant == 'setup'
         env:
           ACTIVATION_SECRET: ${{ secrets.AAPS_ACTIVATION_SECRET }}
         run: |
-          EXTRA=""; [ "$VARIANT" = "rapid" ] && EXTRA="--rapid"
+          EXTRA=""; [ "$VARIANT" = "setup" ] && EXTRA="--rapid"
           python3 "$RUNNER_TEMP/protectie/aplica_protectie.py" "$RUNNER_TEMP/protectie" $EXTRA
           # AAPS refuza build-ul cu modificari necomise: le comitem local (doar pe runner, nu se urca nicaieri).
           git add -A app/src/main plugins/constraints/src
@@ -153,8 +153,8 @@ jobs:
         run: |
           if [ "$VARIANT" = "master" ]; then
             TASK=":app:assembleFullRelease"; OUT="app/build/outputs/apk/full/release"; NAME="aaps-${VERSION}-protejat.apk"
-          elif [ "$VARIANT" = "rapid" ]; then
-            TASK=":app:assembleFullRelease"; OUT="app/build/outputs/apk/full/release"; NAME="aaps-${VERSION}-rapid.apk"
+          elif [ "$VARIANT" = "setup" ]; then
+            TASK=":app:assembleFullRelease"; OUT="app/build/outputs/apk/full/release"; NAME="aaps-${VERSION}-setup.apk"
           else
             TASK=":app:assembleAapsclientRelease"; OUT="app/build/outputs/apk/aapsclient/release"; NAME="aapsclient-${VERSION}.apk"
           fi
@@ -173,7 +173,7 @@ jobs:
           mv $OUT/*.apk "$NAME"
           ls -l "$NAME"
 
-      - name: Urca in Google Drive (AAPS Clienti/<Master|Client> sau AAPS Rapid)
+      - name: Urca in Google Drive (AAPS Aplicații/<Master|Client> sau AAPS Setup)
         run: |
           API=https://www.googleapis.com/drive/v3/files
           FOLDER="mimeType='application/vnd.google-apps.folder' and trashed=false"
@@ -186,12 +186,12 @@ jobs:
             fi
             echo "$ID"
           }
-          if [ "$VARIANT" = "rapid" ]; then
-            PARENT=$(find_or_create "AAPS Rapid" "root"); WHERE="AAPS Rapid"
+          if [ "$VARIANT" = "setup" ]; then
+            PARENT=$(find_or_create "AAPS Setup" "root"); WHERE="AAPS Setup"
           else
-            ROOT=$(find_or_create "AAPS Clienti" "root")
+            ROOT=$(find_or_create "AAPS Aplicații" "root")
             if [ "$VARIANT" = "master" ]; then SUB="Master"; else SUB="Client"; fi
-            PARENT=$(find_or_create "$SUB" "$ROOT"); WHERE="AAPS Clienti/$SUB"
+            PARENT=$(find_or_create "$SUB" "$ROOT"); WHERE="AAPS Aplicații/$SUB"
           fi
           VER=$(find_or_create "$VERSION" "$PARENT")
           NAME="$APK_NAME"
