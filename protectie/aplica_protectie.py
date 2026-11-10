@@ -65,11 +65,12 @@ patch(
 print("Protectie aplicata.")
 
 # ---------------------------------------------------------------------------
-# AAPS Rapid (doar cu --rapid): la prima pornire marcheaza obiectivele 0-9 ca
-# incepute si indeplinite, cu o data de acum 24 de ore (o data din viitor ar fi
-# stearsa de AAPS). Se intampla doar daca obiectivul 0 nu a fost inceput, deci
-# nu schimba nimic pe un telefon care are deja obiective. Starea se salveaza in
-# setari, asa ca AAPS Standard instalat peste Rapid o pastreaza.
+# AAPS Rapid (doar cu --rapid): la fiecare pornire, toate obiectivele care nu
+# sunt indeplinite sunt marcate incepute si indeplinite, cu o data de acum 24 de
+# ore (o data din viitor ar fi stearsa de AAPS). Raspunsurile de la examen
+# (obiectivul 3) se marcheaza si ele: fara ele, Objective2 sterge la urmatoarea
+# pornire data de indeplinire a examenului. Totul se salveaza in setari, asa ca
+# AAPS Standard instalat peste Rapid pastreaza obiectivele.
 # ---------------------------------------------------------------------------
 if "--rapid" in sys.argv[2:]:
     patch(
@@ -77,14 +78,13 @@ if "--rapid" in sys.argv[2:]:
         "), PluginConstraints, Objectives {",
         "\n"
         "\n    init {"
-        "\n        // AAPS Rapid raulmuresan-builds: obiectivele marcate indeplinite la prima pornire."
-        "\n        if (objectives.isNotEmpty() && !objectives[FIRST_OBJECTIVE].isStarted) {"
-        "\n            val past = kotlin.time.Clock.System.now().toEpochMilliseconds() - 24L * 60L * 60L * 1000L"
-        "\n            for (objective in objectives) {"
-        "\n                objective.startedOn = past"
-        "\n                objective.accomplishedOn = past"
-        "\n            }"
+        "\n        // AAPS Rapid raulmuresan-builds: toate obiectivele indeplinite, inclusiv raspunsurile de la examen."
+        "\n        val past = kotlin.time.Clock.System.now().toEpochMilliseconds() - 24L * 60L * 60L * 1000L"
+        "\n        for (objective in objectives) {"
+        "\n            for (task in objective.tasks) if (task is Objective.ExamTask && !task.answered) task.answered = true"
+        "\n            if (!objective.isStarted) objective.startedOn = past"
+        "\n            if (!objective.isAccomplished) objective.accomplishedOn = past"
         "\n        }"
         "\n    }",
     )
-    print("Varianta Rapid aplicata (obiective indeplinite la prima pornire).")
+    print("Varianta Rapid aplicata (obiective si examen indeplinite la fiecare pornire).")
